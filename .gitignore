@@ -1,0 +1,28 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars
+!*.example.tfvars
+override.tf
+override.tf.json
+.terraformrc
+terraform.rc
+
+# Go
+*.exe
+*.test
+*.out
+vendor/
+
+# Env / secrets
+.env
+*.env
+!.env.example
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
