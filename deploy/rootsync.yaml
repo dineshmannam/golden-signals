@@ -1,0 +1,18 @@
+# Config Sync RootSync: the cluster reconciles this repo's deploy/overlays/prod
+# directory as the source of truth. Apply this once (or via the Config Sync
+# operator) after enabling Config Sync on the cluster.
+#
+# Replace GITHUB_OWNER with your fork. For a private repo, configure the `secretRef`
+# (or use `gcpServiceAccountEmail` with Workload Identity) instead of secretType: none.
+apiVersion: configsync.gke.io/v1beta1
+kind: RootSync
+metadata:
+  name: root-sync
+  namespace: config-management-system
+spec:
+  sourceFormat: unstructured
+  git:
+    repo: https://github.com/GITHUB_OWNER/golden-signals
+    branch: main
+    dir: deploy/overlays/prod
+    auth: none

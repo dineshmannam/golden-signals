@@ -1,0 +1,31 @@
+# Managed Service for Prometheus scrape configs. GMP's managed collection reads
+# these PodMonitoring resources and scrapes /metrics on each pod, ingesting the
+# series (including http_requests_total / http_request_duration_seconds) that the
+# Cloud Monitoring SLOs are built on.
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: gateway
+  namespace: golden-signals
+spec:
+  selector:
+    matchLabels:
+      app: gateway
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+---
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: orders
+  namespace: golden-signals
+spec:
+  selector:
+    matchLabels:
+      app: orders
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

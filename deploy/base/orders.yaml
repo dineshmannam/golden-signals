@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders
+  namespace: golden-signals
+  labels:
+    app: orders
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: orders
+  template:
+    metadata:
+      labels:
+        app: orders
+    spec:
+      serviceAccountName: orders
+      containers:
+        - name: orders
+          # Overlays set the real Artifact Registry image and tag.
+          image: orders:latest
+          ports:
+            - name: http
+              containerPort: 8081
+          env:
+            - name: PORT
+              value: "8081"
+            # DATABASE_URL comes from a Secret the operator creates from the
+            # Secret Manager value Terraform stores (see deploy/README.md).
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: orders-db
+                  key: url
+            - name: OTEL_SERVICE_NAME
+              value: orders
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: $(NODE_IP):4317
+            - name: LOG_LEVEL
+              value: info
+            - name: FAULT_ENABLED
+              value: "false"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders
+  namespace: golden-signals
+  labels:
+    app: orders
+spec:
+  type: ClusterIP
+  selector:
+    app: orders
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http

@@ -1,0 +1,66 @@
+# Cloud Build CI: lint + test the Go code, then build and push the service
+# images to Artifact Registry, tagged by commit SHA (and :latest).
+#
+# The operator owns the GitHub <-> Cloud Build host connection and the trigger;
+# this file wires no secrets and creates no trigger. It expects the Artifact
+# Registry repo created by Terraform (infra/terraform).
+#
+# Substitutions (override at trigger creation if your names differ):
+#   _REGION  Artifact Registry / cluster region.
+#   _REPO    Artifact Registry repository ID.
+
+substitutions:
+  _REGION: us-central1
+  _REPO: golden-signals
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+steps:
+  # --- Lint + unit tests. ---
+  - id: test
+    name: golang:1.21
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        gofmt -l . | tee /tmp/fmt.out
+        test ! -s /tmp/fmt.out   # fail if any file is unformatted
+        go vet ./...
+        go test ./...
+
+  # --- Build images (tagged with commit SHA and latest). ---
+  - id: build-gateway
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/gateway:$SHORT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/gateway:latest
+      - -f
+      - services/gateway/Dockerfile
+      - .
+    waitFor: ["test"]
+
+  - id: build-orders
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/orders:$SHORT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/orders:latest
+      - -f
+      - services/orders/Dockerfile
+      - .
+    waitFor: ["test"]
+
+# Cloud Build pushes these tags to Artifact Registry after a successful build.
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/gateway:$SHORT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/gateway:latest
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/orders:$SHORT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/orders:latest
