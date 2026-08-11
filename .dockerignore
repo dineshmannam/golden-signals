@@ -1,0 +1,9 @@
+.git
+.gitignore
+**/*_test.go
+infra
+deploy
+otel
+*.md
+LICENSE
+docker-compose.yaml

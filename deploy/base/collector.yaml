@@ -1,0 +1,64 @@
+# OpenTelemetry Collector as a node-local agent (DaemonSet). Each service pod
+# sends OTLP to the collector on its own node via the host IP (status.hostIP),
+# which is why the ports are exposed as hostPorts. The collector fans traces,
+# metrics and logs out to Cloud Trace, Managed Service for Prometheus and Cloud
+# Logging (see the ConfigMap).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: otel-collector
+  namespace: golden-signals
+  labels:
+    app: otel-collector
+spec:
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      serviceAccountName: otel-collector
+      containers:
+        - name: otel-collector
+          # Contrib distribution: the googlecloud / googlemanagedprometheus
+          # exporters live there. Bump the tag to adopt newer collector releases.
+          image: otel/opentelemetry-collector-contrib:0.96.0
+          args: ["--config=/conf/collector-config.yaml"]
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+              hostPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+              hostPort: 4318
+            - name: health
+              containerPort: 13133
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 200Mi
+            limits:
+              cpu: 500m
+              memory: 500Mi
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+            items:
+              - key: collector-config.yaml
+                path: collector-config.yaml

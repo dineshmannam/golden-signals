@@ -1,0 +1,84 @@
+# OpenTelemetry Collector configuration for golden-signals.
+#
+# The services push OTLP (traces + metrics) to this collector, which fans the
+# signals out to the three Google Cloud backends:
+#
+#   traces  -> Cloud Trace                      (googlecloud exporter)
+#   logs    -> Cloud Logging                    (googlecloud exporter)
+#   metrics -> Managed Service for Prometheus   (googlemanagedprometheus exporter)
+#
+# It requires the *contrib* collector distribution (otel/opentelemetry-collector-contrib
+# or Google's build) because the googlecloud / googlemanagedprometheus exporters
+# live there. Authentication uses Application Default Credentials, which on GKE
+# resolve to the Kubernetes service account bound via Workload Identity — no keys
+# in the config. The GCP project is auto-detected from the metadata server; set
+# it explicitly with the GOOGLE_CLOUD_PROJECT env var if you need to override.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Guardrail: drop data before the collector OOMs under a telemetry spike.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  # Attach GCP resource attributes (project, cluster, region, node) so signals
+  # land against the right monitored resource in each backend.
+  resourcedetection:
+    detectors: [env, gcp]
+    timeout: 5s
+    override: false
+
+  # Enrich with Kubernetes metadata (namespace, pod, deployment) for filtering.
+  k8sattributes:
+    auth_type: serviceAccount
+    passthrough: false
+    extract:
+      metadata:
+        - k8s.namespace.name
+        - k8s.pod.name
+        - k8s.deployment.name
+        - k8s.node.name
+
+  batch:
+    # Cloud Trace/Logging ingest is happier with modest batches.
+    send_batch_size: 200
+    send_batch_max_size: 400
+    timeout: 5s
+
+exporters:
+  googlecloud:
+    # project is auto-detected from the metadata server / GOOGLE_CLOUD_PROJECT.
+    log:
+      default_log_name: golden-signals
+
+  googlemanagedprometheus: {}
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, k8sattributes, resourcedetection, batch]
+      exporters: [googlecloud]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, k8sattributes, resourcedetection, batch]
+      exporters: [googlemanagedprometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, k8sattributes, resourcedetection, batch]
+      exporters: [googlecloud]
+  telemetry:
+    logs:
+      encoding: json

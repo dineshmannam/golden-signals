@@ -1,0 +1,60 @@
+# Local smoke-test stack: Postgres + orders + gateway.
+#
+# This is for running the services on your laptop, not for production. The OTLP
+# endpoint defaults to an (optional) collector; if none is running the exporters
+# simply log connection errors and the services keep serving — the fault
+# injection, JSON logs, and /metrics endpoints all still work.
+#
+# Usage:
+#   docker compose up --build
+#   curl -XPOST localhost:8080/checkout -d '{"item":"widget","quantity":2}'
+#   curl localhost:8080/orders/1
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: orders
+      POSTGRES_PASSWORD: orders
+      POSTGRES_DB: orders
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orders"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  orders:
+    build:
+      context: .
+      dockerfile: services/orders/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: "8081"
+      DATABASE_URL: postgres://orders:orders@postgres:5432/orders?sslmode=disable
+      OTEL_SERVICE_NAME: orders
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      LOG_LEVEL: info
+      # Fault-injection knobs (disabled by default). Flip FAULT_ENABLED=true and
+      # set knobs to demo an error-budget burn. See internal/faultinject.
+      FAULT_ENABLED: ${FAULT_ENABLED:-false}
+    ports:
+      - "8081:8081"
+
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    depends_on:
+      - orders
+    environment:
+      PORT: "8080"
+      ORDERS_URL: http://orders:8081
+      OTEL_SERVICE_NAME: gateway
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      LOG_LEVEL: info
+      FAULT_ENABLED: ${FAULT_ENABLED:-false}
+    ports:
+      - "8080:8080"

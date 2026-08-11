@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: golden-signals
+  labels:
+    app: gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      serviceAccountName: gateway
+      containers:
+        - name: gateway
+          # Overlays set the real Artifact Registry image and tag.
+          image: gateway:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: ORDERS_URL
+              value: http://orders:8081
+            - name: OTEL_SERVICE_NAME
+              value: gateway
+            # Send OTLP to the node-local collector DaemonSet via the host IP.
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: $(NODE_IP):4317
+            - name: LOG_LEVEL
+              value: info
+            # Fault injection is off by default. Flip to "true" and add FAULT_*
+            # knobs (see internal/faultinject) to run a game-day.
+            - name: FAULT_ENABLED
+              value: "false"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: golden-signals
+  labels:
+    app: gateway
+spec:
+  # Public entrypoint. Swap for ClusterIP behind an Ingress/Gateway if preferred.
+  type: LoadBalancer
+  selector:
+    app: gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
