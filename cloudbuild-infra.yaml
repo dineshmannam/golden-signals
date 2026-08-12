@@ -1,0 +1,49 @@
+# Cloud Build config for the infrastructure pipeline: runs Terraform against the
+# GCS remote-state backend to plan and apply infra/terraform/.
+#
+# Wired by the "golden-signals-infra" trigger (see scripts/create-triggers.sh),
+# which fires on changes under infra/**. Run the build as a service account with
+# the roles bootstrap.sh grants the provisioner (or pass one at trigger creation).
+#
+# Substitutions (set by the trigger; override with --substitutions for ad hoc runs):
+#   _STATE_BUCKET  GCS bucket holding Terraform remote state (required).
+#   _REGION        Region passed to Terraform as TF_VAR_region.
+#   _APPLY         "true" to apply, "false" to plan-only. Defaults to apply.
+#
+# PROJECT_ID is provided by Cloud Build and passed to Terraform as TF_VAR_project_id,
+# so no project ID is hard-coded here.
+
+substitutions:
+  _STATE_BUCKET: "" # required — the trigger supplies it.
+  _REGION: us-central1
+  _APPLY: "true"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+steps:
+  - id: terraform
+    name: hashicorp/terraform:1.5
+    dir: infra/terraform
+    entrypoint: sh
+    env:
+      - TF_IN_AUTOMATION=1
+      - TF_VAR_project_id=$PROJECT_ID
+      - TF_VAR_region=${_REGION}
+    args:
+      - -c
+      - |
+        set -eu
+        if [ -z "${_STATE_BUCKET}" ]; then
+          echo "error: _STATE_BUCKET substitution is empty" >&2
+          exit 1
+        fi
+        terraform init -input=false -backend-config="bucket=${_STATE_BUCKET}"
+        terraform validate
+        terraform plan -input=false -out=tfplan
+        if [ "${_APPLY}" = "true" ]; then
+          terraform apply -input=false -auto-approve tfplan
+        else
+          echo "Plan-only run (_APPLY=${_APPLY}); skipping apply."
+        fi

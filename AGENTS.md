@@ -9,6 +9,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Single Go module (`github.com/dineshmannam/golden-signals`, Go 1.21). `go build ./...`, `go test ./...`, `gofmt -l .` from the repo root.
 - **macOS/darwin-arm64 gotcha:** the Go 1.21 internal linker produces test binaries that fail at runtime here with `dyld: missing LC_UUID load command`. Locally run tests with `go test -ldflags=-linkmode=external ./...`. Linux CI (Cloud Build `golang:1.21`) is unaffected — do not add this flag to `cloudbuild.yaml`.
 - Terraform (in `infra/terraform/`): `terraform fmt -check -recursive`; validate offline with `terraform init -backend=false && terraform validate`. Never `apply` from here — no GCP creds; the operator/Cloud Build applies.
+- Deploy tooling: `bootstrap.sh` (APIs + state bucket + provisioning SA, `--destroy` teardown), `scripts/create-triggers.sh` (2nd-gen Cloud Build infra/app triggers), `cloudbuild-infra.yaml` (Terraform pipeline). Full flow in `DEPLOY.md`. Shell scripts must stay `shellcheck`-clean and run on macOS bash 3.2 (guard empty-array expansion with `${arr[@]+"${arr[@]}"}`). The operator runs them — no GCP auth here.
 - K8s manifests: `kubectl kustomize deploy/overlays/prod` must render clean. `kubeconform`/`kustomize` binaries are not installed in this env.
 
 ## Architecture / sharp edges
