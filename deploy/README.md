@@ -17,6 +17,7 @@ deploy/
 │   ├── collector.yaml       # OTel Collector DaemonSet (node-local agent)
 │   ├── orders.yaml          # Deployment + Service
 │   ├── gateway.yaml         # Deployment + Service (LoadBalancer)
+│   ├── fulfillment.yaml     # Deployment (async worker; no Service)
 │   ├── podmonitoring.yaml   # GMP scrape configs for /metrics
 │   └── kustomization.yaml
 └── overlays/prod/
@@ -36,12 +37,14 @@ kubectl kustomize deploy/overlays/prod
 
    ```bash
    sed -i '' 's/PROJECT_ID/your-gcp-project-id/g' \
-     deploy/base/serviceaccounts.yaml deploy/overlays/prod/kustomization.yaml
+     deploy/base/serviceaccounts.yaml deploy/base/orders.yaml \
+     deploy/base/fulfillment.yaml deploy/overlays/prod/kustomization.yaml
    # (GNU sed: drop the '' after -i)
    ```
 
    The GSA emails must match what Terraform created — see
-   `terraform output service_accounts`.
+   `terraform output service_accounts`. `orders` and `fulfillment` also read
+   `PUBSUB_PROJECT_ID` from this substitution.
 
 2. **Set the image tags.** In `overlays/prod/kustomization.yaml`, point
    `newName` at your Artifact Registry repo and `newTag` at a built tag (e.g. the

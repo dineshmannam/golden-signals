@@ -13,6 +13,11 @@
 //	OTEL_SERVICE_NAME      service name for telemetry (default "orders").
 //	OTEL_EXPORTER_OTLP_ENDPOINT   collector OTLP/gRPC endpoint (default localhost:4317).
 //	LOG_LEVEL              debug|info|warn|error (default info).
+//	PUBSUB_PROJECT_ID      GCP project for Pub/Sub (falls back to GOOGLE_CLOUD_PROJECT).
+//	                       If unset, event publishing is disabled and the API still
+//	                       serves synchronously.
+//	PUBSUB_TOPIC_ORDER_CREATED   topic for OrderCreated events (default "order-created").
+//	PUBSUB_EMULATOR_HOST   set by docker-compose to use the local emulator.
 //	FAULT_*                see package faultinject.
 package main
 
@@ -29,6 +34,7 @@ import (
 	"time"
 
 	"github.com/dineshmannam/golden-signals/internal/config"
+	"github.com/dineshmannam/golden-signals/internal/events"
 	"github.com/dineshmannam/golden-signals/internal/faultinject"
 	"github.com/dineshmannam/golden-signals/internal/httpx"
 	"github.com/dineshmannam/golden-signals/internal/telemetry"
@@ -83,7 +89,13 @@ func run() error {
 		return err
 	}
 
-	srv, err := newServer(store, inj)
+	pub, err := newPublisher(ctx, log)
+	if err != nil {
+		return err
+	}
+	defer pub.Close()
+
+	srv, err := newServer(store, inj, pub)
 	if err != nil {
 		return err
 	}
@@ -138,10 +150,11 @@ type storage interface {
 type server struct {
 	store   storage
 	inj     *faultinject.Injector
+	pub     publisher
 	created metric.Int64Counter
 }
 
-func newServer(store storage, inj *faultinject.Injector) (*server, error) {
+func newServer(store storage, inj *faultinject.Injector, pub publisher) (*server, error) {
 	meter := otel.Meter("github.com/dineshmannam/golden-signals/services/orders")
 	created, err := meter.Int64Counter("orders.created",
 		metric.WithDescription("Number of orders created"),
@@ -150,7 +163,7 @@ func newServer(store storage, inj *faultinject.Injector) (*server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &server{store: store, inj: inj, created: created}, nil
+	return &server{store: store, inj: inj, pub: pub, created: created}, nil
 }
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -198,6 +211,20 @@ func (s *server) create(w http.ResponseWriter, r *http.Request) {
 		attribute.String("cohort", scope.Cohort),
 		attribute.String("region", scope.Region),
 	))
+	// Publish the OrderCreated event AFTER the row is committed. A publish
+	// failure does not fail the request — the order exists — but it is logged
+	// loudly because the async fulfillment step will not run for this order. A
+	// production system would close this gap with a transactional outbox.
+	if err := s.pub.PublishOrderCreated(r.Context(), events.OrderCreated{
+		OrderID:   order.ID,
+		Item:      order.Item,
+		Quantity:  order.Quantity,
+		Cohort:    order.Cohort,
+		Region:    order.Region,
+		CreatedAt: order.CreatedAt,
+	}); err != nil {
+		telemetry.Logger().ErrorContext(r.Context(), "publish OrderCreated failed", "error", err, "order_id", order.ID)
+	}
 	writeJSON(w, http.StatusCreated, order)
 }
 

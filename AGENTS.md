@@ -17,7 +17,11 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - SLOs (in `infra/terraform/monitoring.tf`) key off the **native Prometheus** metrics registered in `internal/httpx/metrics.go` (`http_requests_total`, `http_request_duration_seconds`) with a constant `service` label, scoped to `gateway`. Renaming those metrics/labels breaks the SLO filters.
 - `deploy/base/collector-configmap.yaml` duplicates `otel/collector-config.yaml` — keep the two in sync.
 - Placeholders the operator replaces per-fork: `PROJECT_ID` in `deploy/`, `YOUR_TF_STATE_BUCKET`, `GITHUB_OWNER` in `deploy/rootsync.yaml`. Project ID is a Terraform variable — never hard-code a real one.
-- Scope boundary: foundation only (gateway + orders + Postgres + OTel + SLOs + Config Sync + Cloud Build). The Pub/Sub `fulfillment` worker is intentionally out of scope.
+- **Streaming path (orders → Pub/Sub → fulfillment):** trace context crosses the queue via `internal/pubsubx` — `InjectTraceContext` on publish, `ExtractTraceContext` on receive. This depends on the global `TextMapPropagator` (TraceContext) set in `internal/telemetry.Setup`; don't remove it or the trace breaks at the async boundary. The `OrderCreated` event schema is shared in `internal/events` — change both producer (`services/orders`) and consumer (`services/fulfillment`) together.
+- The `orders` table's `fulfilled_at` column is written by `fulfillment` but the schema is owned by `orders` (`services/orders/store.go` `Migrate`). `MarkFulfilled` is idempotent (`WHERE fulfilled_at IS NULL`) because Pub/Sub is at-least-once.
+- The fulfillment SLO keys off a **separate** native metric, `messages_processed_total` (`result` label), registered in `internal/pubsubx/metrics.go` and scoped by a constant `service="fulfillment"` label. It is defined in `infra/terraform/monitoring_fulfillment.tf`, kept apart from the gateway SLO metrics so neither renames the other's series.
+- Local `docker compose` runs a Pub/Sub emulator; the one-shot `pubsub-init` service creates the topic/subscription/DLQ (mirror of `infra/terraform/pubsub.tf`) — keep the two in sync when changing names/attempts.
+- Scope boundary: gateway + orders + fulfillment + Postgres + Pub/Sub (topic/sub/DLQ) + OTel + SLOs + Config Sync + Cloud Build. GCP bootstrap (state bucket, provisioning SA) and the deploy pipeline / Cloud Build trigger are owned by the operator — not in this repo.
 
 ## Maintaining this file
 

@@ -17,3 +17,6 @@ images:
   - name: orders
     newName: us-central1-docker.pkg.dev/PROJECT_ID/golden-signals/orders
     newTag: latest
+  - name: fulfillment
+    newName: us-central1-docker.pkg.dev/PROJECT_ID/golden-signals/fulfillment
+    newTag: latest

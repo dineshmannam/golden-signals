@@ -29,3 +29,17 @@ spec:
     - port: http
       path: /metrics
       interval: 30s
+---
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: fulfillment
+  namespace: golden-signals
+spec:
+  selector:
+    matchLabels:
+      app: fulfillment
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

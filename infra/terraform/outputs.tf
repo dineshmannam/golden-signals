@@ -36,10 +36,26 @@ output "database_url_secret" {
 output "service_accounts" {
   description = "GSA emails to annotate the matching Kubernetes service accounts with (Workload Identity)."
   value = {
-    collector = google_service_account.collector.email
-    orders    = google_service_account.orders.email
-    gateway   = google_service_account.gateway.email
+    collector   = google_service_account.collector.email
+    orders      = google_service_account.orders.email
+    gateway     = google_service_account.gateway.email
+    fulfillment = google_service_account.fulfillment.email
   }
+}
+
+output "pubsub_topic" {
+  description = "Pub/Sub topic OrderCreated events are published to."
+  value       = google_pubsub_topic.order_created.name
+}
+
+output "pubsub_subscription" {
+  description = "Pull subscription the fulfillment worker consumes."
+  value       = google_pubsub_subscription.order_created_fulfillment.name
+}
+
+output "pubsub_dead_letter_subscription" {
+  description = "Subscription retaining messages that exhausted their delivery attempts."
+  value       = google_pubsub_subscription.order_created_dead_letter.name
 }
 
 output "dashboard_id" {

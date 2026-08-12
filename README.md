@@ -20,15 +20,21 @@ the repo, and the cluster is reconciled from Git.
 flowchart LR
   client([client]) -->|HTTP| gw[gateway]
   gw -->|HTTP + trace context| ord[orders]
-  ord -->|SQL| pg[(Cloud SQL\nPostgres)]
+  ord -->|SQL insert| pg[(Cloud SQL\nPostgres)]
+  ord -->|publish OrderCreated\n+ trace context| ps[[Pub/Sub\norder-created]]
+  ps --> ful[fulfillment\nworker]
+  ful -->|SQL update\nmark fulfilled| pg
+  ps -. exhausted retries .-> dlq[[dead-letter\ntopic]]
 
   gw -. OTLP .-> col[OTel Collector\nDaemonSet]
   ord -. OTLP .-> col
+  ful -. OTLP .-> col
   col -->|traces| ct[Cloud Trace]
   col -->|logs| cl[Cloud Logging]
   col -->|metrics| mp[Managed Service\nfor Prometheus]
   gw -. /metrics scrape .-> mp
   ord -. /metrics scrape .-> mp
+  ful -. /metrics scrape .-> mp
 
   mp --> mon[Cloud Monitoring\nSLOs · burn-rate alerts · dashboard]
 ```
@@ -39,8 +45,14 @@ flowchart LR
   and forwards requests to `orders` and relays the response. This is where the
   availability and latency **SLOs** are measured.
 - **`orders`** — business logic; owns the `orders` table in Cloud SQL (Postgres).
+  After committing an order it **publishes an `OrderCreated` event to Pub/Sub**,
+  propagating the trace context into the message attributes.
+- **`fulfillment`** — the asynchronous worker. It **pull-subscribes** to the
+  `OrderCreated` events, continues the same distributed trace across the queue,
+  marks the order fulfilled in Postgres, and emits its own RED metrics. Messages
+  that keep failing are routed to a **dead-letter topic**.
 
-Both are instrumented with **OpenTelemetry** (traces + metrics over OTLP),
+All three are instrumented with **OpenTelemetry** (traces + metrics over OTLP),
 emit **structured JSON logs** with trace correlation, expose `/healthz`,
 `/readyz`, and a Prometheus-scrapable `/metrics`, and share a config-driven
 **fault-injection layer** (see below).
@@ -74,13 +86,30 @@ Sync** reconciles the Kubernetes manifests from this repo into the cluster.
    client, which **propagates the W3C trace context** and creates a client span.
 4. `orders` starts its own server span, runs the DB insert (a child span), and
    returns the created order.
-5. The gateway relays the response. All spans share one **trace ID**; each log
-   line emitted during the request carries `trace_id`/`span_id`, so a trace in
-   Cloud Trace links straight to its logs in Cloud Logging.
+5. The gateway relays the response. The synchronous request is now complete.
+6. Asynchronously, `orders` **publishes an `OrderCreated` event** to Pub/Sub. The
+   active trace context is injected into the message attributes
+   (`traceparent`/`tracestate`) inside a producer span.
+7. The `fulfillment` worker pulls the message, **extracts the trace context** to
+   make its processing span a child of the producer span, marks the order
+   fulfilled in Postgres, and Acks. A subsequent `GET /orders/{id}` shows
+   `fulfilled_at` set.
+
+All spans — gateway, orders, the Pub/Sub producer, and the fulfillment consumer —
+share one **trace ID**, so a single trace in Cloud Trace spans the async
+boundary. Every log line carries `trace_id`/`span_id`, so a trace links straight
+to its logs in Cloud Logging.
 
 Simulated `X-Cohort` and `X-Region` request headers are attached to spans as
 `user.cohort` / `user.region` — high-cardinality attributes used in the series
-to demonstrate narrow-blast-radius debugging.
+to demonstrate narrow-blast-radius debugging. They ride the event too, so the
+fulfillment span is sliceable the same way.
+
+**Dead-letter path.** If the worker keeps failing a message (e.g. a
+fault-injected processing abort, or a poison payload), Pub/Sub redelivers it and,
+after `max_delivery_attempts`, routes it to the **dead-letter topic** — where a
+dead-letter subscription retains it for inspection or replay instead of blocking
+the subscription forever.
 
 ---
 
@@ -105,7 +134,7 @@ default**; every knob is an environment variable.
 | `FAULT_LATENCY_MIN_MS` / `FAULT_LATENCY_MAX_MS` | Injected latency window. |
 | `FAULT_ABORT_PROB` | Probability (0–1) of aborting the request. |
 | `FAULT_ABORT_STATUS` | HTTP status for aborts (default 503). |
-| `FAULT_DEP_LATENCY_PROB` | Probability (0–1) of slowing a dependency call (orders→DB, gateway→orders). |
+| `FAULT_DEP_LATENCY_PROB` | Probability (0–1) of slowing a dependency call (orders→DB, gateway→orders, fulfillment→DB). |
 | `FAULT_DEP_LATENCY_MIN_MS` / `FAULT_DEP_LATENCY_MAX_MS` | Dependency slowdown window. |
 
 ### Rule-based config (many rules)
@@ -129,11 +158,18 @@ Because injected aborts and latency flow through the same metrics/spans as real
 traffic, they show up in the golden-signals dashboard and drive the burn-rate
 alerts — exactly as a genuine incident would.
 
+The `fulfillment` worker reuses the same layer on the async path. It scopes
+matches to the synthetic endpoint `/fulfill` (with the event's cohort/region): a
+matched **abort** makes a message fail processing — Nacked, retried, and
+eventually dead-lettered — and **dependency latency** slows its DB write. That is
+how you exercise the dead-letter path and the fulfillment SLO on cue.
+
 ---
 
 ## Run locally
 
-Requires Docker. Brings up Postgres + both services (the OTLP exporter simply
+Requires Docker. Brings up Postgres, a **Pub/Sub emulator**, and all three
+services, exercising the full streaming path locally (the OTLP exporter simply
 logs connection errors if no collector is running — the app still serves):
 
 ```bash
@@ -141,14 +177,19 @@ docker compose up --build
 
 # create an order through the gateway
 curl -XPOST localhost:8080/checkout -d '{"item":"widget","quantity":2}'
-# read it back
+# read it back — a moment later "fulfilled_at" is set by the async worker
 curl localhost:8080/orders/1
-# scrape metrics
+# scrape metrics (gateway RED; fulfillment RED on :8082)
 curl localhost:8080/metrics
+curl localhost:8082/metrics
 
 # run a fault: abort half of checkouts
 FAULT_ENABLED=true docker compose up --build   # then set knobs in docker-compose.yaml
 ```
+
+The emulator is created empty; the one-shot `pubsub-init` service provisions the
+topic, subscription, and dead-letter resources (mirroring
+`infra/terraform/pubsub.tf`) before `orders` and `fulfillment` start.
 
 Build and test the Go code directly:
 
@@ -216,8 +257,8 @@ reconciles `deploy/overlays/prod`.
 
 | Path | What |
 |---|---|
-| [`services/gateway`](services/gateway), [`services/orders`](services/orders) | The two Go services + Dockerfiles. |
-| [`internal/`](internal) | Shared packages: `telemetry`, `faultinject`, `httpx`, `config`. |
+| [`services/gateway`](services/gateway), [`services/orders`](services/orders), [`services/fulfillment`](services/fulfillment) | The three Go services + Dockerfiles. |
+| [`internal/`](internal) | Shared packages: `telemetry`, `faultinject`, `httpx`, `pubsubx`, `events`, `config`. |
 | [`otel/`](otel) | Standalone OpenTelemetry Collector config. |
 | [`infra/terraform/`](infra/terraform) | GKE, Cloud SQL, Artifact Registry, IAM/WI, SLOs/alerts/dashboard. |
 | [`deploy/`](deploy) | Config Sync layout: base manifests + prod overlay + `RootSync`. |
@@ -235,8 +276,17 @@ reconciles `deploy/overlays/prod`.
 - **Cloud SQL over private IP** with the password stored in Secret Manager (never
   in state outputs or Git). IAM database auth via the Cloud SQL Auth Proxy is a
   reasonable hardening step left out of the foundation for simplicity.
-- **Scope:** this is the foundation for blog posts #1–#4. The Pub/Sub
-  `fulfillment` worker / streaming path is intentionally **not** included yet.
+- **Trace context across the queue.** HTTP gets propagation for free from
+  `otelhttp`; Pub/Sub does not, so `internal/pubsubx` injects the W3C context into
+  the message attributes on publish and extracts it on receive. That single seam
+  is what keeps one trace ID flowing from the gateway into the async worker.
+- **At-least-once, idempotent consumer.** Pub/Sub redelivers, so `MarkFulfilled`
+  is a no-op on an already-fulfilled order. A publish failure in `orders` is
+  logged but does not fail the (already-committed) request; a transactional
+  outbox would close that gap in production.
+- **Fulfillment has its own SLO.** A processing-success SLO keys off the worker's
+  `messages_processed_total` metric (`result` label), separate from the gateway
+  SLO metrics so neither affects the other.
 
 ## License
 

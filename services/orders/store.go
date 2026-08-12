@@ -16,12 +16,13 @@ var ErrNotFound = errors.New("order not found")
 
 // Order is a row in the orders table.
 type Order struct {
-	ID        int64     `json:"id"`
-	Item      string    `json:"item"`
-	Quantity  int       `json:"quantity"`
-	Cohort    string    `json:"cohort,omitempty"`
-	Region    string    `json:"region,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ID          int64      `json:"id"`
+	Item        string     `json:"item"`
+	Quantity    int        `json:"quantity"`
+	Cohort      string     `json:"cohort,omitempty"`
+	Region      string     `json:"region,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	FulfilledAt *time.Time `json:"fulfilled_at,omitempty"`
 }
 
 // Store is the Postgres-backed persistence layer for orders.
@@ -58,14 +59,19 @@ func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 // keep schema management inline and idempotent rather than pulling in a
 // migration tool; production systems would use versioned migrations.
 func (s *Store) Migrate(ctx context.Context) error {
+	// The fulfilled_at column is written by the async fulfillment worker
+	// (services/fulfillment) once it processes the OrderCreated event. orders
+	// owns the schema, so the column is defined here even though another service
+	// updates it.
 	const ddl = `
 CREATE TABLE IF NOT EXISTS orders (
-    id         BIGSERIAL PRIMARY KEY,
-    item       TEXT        NOT NULL,
-    quantity   INTEGER     NOT NULL CHECK (quantity > 0),
-    cohort     TEXT        NOT NULL DEFAULT '',
-    region     TEXT        NOT NULL DEFAULT '',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    id           BIGSERIAL PRIMARY KEY,
+    item         TEXT        NOT NULL,
+    quantity     INTEGER     NOT NULL CHECK (quantity > 0),
+    cohort       TEXT        NOT NULL DEFAULT '',
+    region       TEXT        NOT NULL DEFAULT '',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    fulfilled_at TIMESTAMPTZ
 );`
 	if _, err := s.pool.Exec(ctx, ddl); err != nil {
 		return fmt.Errorf("orders: migrate: %w", err)
@@ -95,11 +101,11 @@ func (s *Store) Get(ctx context.Context, scope faultinject.Scope, id int64) (Ord
 		return Order{}, err
 	}
 	const q = `
-SELECT id, item, quantity, cohort, region, created_at
+SELECT id, item, quantity, cohort, region, created_at, fulfilled_at
 FROM orders WHERE id = $1;`
 	var o Order
 	err := s.pool.QueryRow(ctx, q, id).
-		Scan(&o.ID, &o.Item, &o.Quantity, &o.Cohort, &o.Region, &o.CreatedAt)
+		Scan(&o.ID, &o.Item, &o.Quantity, &o.Cohort, &o.Region, &o.CreatedAt, &o.FulfilledAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Order{}, ErrNotFound
 	}

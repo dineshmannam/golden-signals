@@ -1,46 +1,51 @@
+# The asynchronous fulfillment worker. It has no inbound business traffic, so
+# there is no Service — it pulls OrderCreated events from its Pub/Sub
+# subscription. The http port exists only for the liveness/readiness probes and
+# the Prometheus /metrics scrape (see podmonitoring.yaml).
+#
+# PROJECT_ID is a placeholder the operator replaces per-fork (same convention as
+# serviceaccounts.yaml); see deploy/README.md.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: orders
+  name: fulfillment
   namespace: golden-signals
   labels:
-    app: orders
+    app: fulfillment
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: orders
+      app: fulfillment
   template:
     metadata:
       labels:
-        app: orders
+        app: fulfillment
     spec:
-      serviceAccountName: orders
+      serviceAccountName: fulfillment
       containers:
-        - name: orders
+        - name: fulfillment
           # Overlays set the real Artifact Registry image and tag.
-          image: orders:latest
+          image: fulfillment:latest
           ports:
             - name: http
-              containerPort: 8081
+              containerPort: 8082
           env:
             - name: PORT
-              value: "8081"
-            # DATABASE_URL comes from a Secret the operator creates from the
-            # Secret Manager value Terraform stores (see deploy/README.md).
+              value: "8082"
+            # DATABASE_URL comes from the same Secret orders uses (the worker
+            # shares the orders table, marking rows fulfilled).
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: orders-db
                   key: url
-            - name: OTEL_SERVICE_NAME
-              value: orders
-            # Pub/Sub for the async streaming path. PROJECT_ID is replaced
-            # per-fork by the operator (see deploy/README.md).
             - name: PUBSUB_PROJECT_ID
               value: PROJECT_ID
-            - name: PUBSUB_TOPIC_ORDER_CREATED
-              value: order-created
+            - name: PUBSUB_SUBSCRIPTION_ORDER_CREATED
+              value: order-created-fulfillment
+            - name: OTEL_SERVICE_NAME
+              value: fulfillment
             - name: NODE_IP
               valueFrom:
                 fieldRef:
@@ -70,19 +75,3 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: orders
-  namespace: golden-signals
-  labels:
-    app: orders
-spec:
-  type: ClusterIP
-  selector:
-    app: orders
-  ports:
-    - name: http
-      port: 8081
-      targetPort: http

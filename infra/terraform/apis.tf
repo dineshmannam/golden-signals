@@ -10,6 +10,7 @@ locals {
     "monitoring.googleapis.com",
     "logging.googleapis.com",
     "cloudtrace.googleapis.com",
+    "pubsub.googleapis.com",
     "iam.googleapis.com",
     "secretmanager.googleapis.com",
     "cloudbuild.googleapis.com",

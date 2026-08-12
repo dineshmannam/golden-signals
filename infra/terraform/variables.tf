@@ -51,6 +51,36 @@ variable "postgres_user" {
   default     = "orders"
 }
 
+variable "pubsub_topic_order_created" {
+  description = "Pub/Sub topic for OrderCreated events (must match orders' PUBSUB_TOPIC_ORDER_CREATED)."
+  type        = string
+  default     = "order-created"
+}
+
+variable "pubsub_subscription_order_created" {
+  description = "Pull subscription the fulfillment worker consumes (must match its PUBSUB_SUBSCRIPTION_ORDER_CREATED)."
+  type        = string
+  default     = "order-created-fulfillment"
+}
+
+variable "pubsub_dead_letter_max_attempts" {
+  description = "Delivery attempts before a message is routed to the dead-letter topic (min 5 per Pub/Sub)."
+  type        = number
+  default     = 5
+}
+
+variable "pubsub_ack_deadline_seconds" {
+  description = "Ack deadline for the fulfillment subscription."
+  type        = number
+  default     = 30
+}
+
+variable "slo_fulfillment_goal" {
+  description = "Fraction of fulfillment messages that must process successfully (0.99 = 99%)."
+  type        = number
+  default     = 0.99
+}
+
 variable "deletion_protection" {
   description = "Protect the Cloud SQL instance and GKE cluster from accidental deletion."
   type        = bool

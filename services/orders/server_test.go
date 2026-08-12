@@ -37,7 +37,7 @@ func (f *fakeStore) Get(_ context.Context, _ faultinject.Scope, id int64) (Order
 func newTestServer(t *testing.T) *server {
 	t.Helper()
 	inj, _ := faultinject.Load()
-	srv, err := newServer(newFakeStore(), inj)
+	srv, err := newServer(newFakeStore(), inj, noopPublisher{})
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
