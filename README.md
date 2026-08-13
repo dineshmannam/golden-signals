@@ -161,6 +161,13 @@ go test ./...
 
 ## Deploy to your own GCP project
 
+For the full repeatable bootstrap → build-triggers → teardown flow, see
+[`DEPLOY.md`](DEPLOY.md): [`bootstrap.sh`](bootstrap.sh) stands up the APIs,
+Terraform state bucket, and provisioning service account, and
+[`scripts/create-triggers.sh`](scripts/create-triggers.sh) creates the Cloud
+Build infra/app triggers. The steps below are the manual Terraform + Config Sync
+path.
+
 Prerequisites: `gcloud`, `terraform` (≥ 1.5), `kubectl`, and a GCP project with
 billing enabled. Region defaults to `us-central1`.
 
