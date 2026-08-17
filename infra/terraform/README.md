@@ -14,7 +14,9 @@ this without GCP credentials; `terraform apply` is the operator's job.
 | `secrets.tf` | Stores the assembled `DATABASE_URL` in Secret Manager. |
 | `artifact_registry.tf` | Docker repository for the service images. |
 | `iam.tf` | Per-workload service accounts, least-privilege roles, Workload Identity bindings, image pull/push grants. |
-| `monitoring.tf` | Monitoring Service, availability + latency **SLOs** (28-day rolling budget), **multi-window multi-burn-rate** alert policies, golden-signals **dashboard**. |
+| `pubsub.tf` | `OrderCreated` topic + fulfillment subscription + **dead-letter** topic/subscription, and least-privilege publish/subscribe IAM. |
+| `monitoring.tf` | Gateway Monitoring Service, availability + latency **SLOs** (28-day rolling budget), **multi-window multi-burn-rate** alert policies, golden-signals **dashboard**. |
+| `monitoring_fulfillment.tf` | Fulfillment Monitoring Service + processing-success **SLO** and fast-burn alert (keyed off `messages_processed_total`). |
 
 ## Usage
 

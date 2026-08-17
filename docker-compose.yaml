@@ -1,4 +1,7 @@
-# Local smoke-test stack: Postgres + orders + gateway.
+# Local smoke-test stack: Postgres + Pub/Sub emulator + orders + gateway +
+# fulfillment. This exercises the full streaming path on your laptop:
+#
+#   gateway -> orders -> (publish OrderCreated) -> Pub/Sub emulator -> fulfillment -> DB
 #
 # This is for running the services on your laptop, not for production. The OTLP
 # endpoint defaults to an (optional) collector; if none is running the exporters
@@ -8,7 +11,11 @@
 # Usage:
 #   docker compose up --build
 #   curl -XPOST localhost:8080/checkout -d '{"item":"widget","quantity":2}'
-#   curl localhost:8080/orders/1
+#   # a moment later the order is fulfilled asynchronously:
+#   curl localhost:8080/orders/1   # -> "fulfilled_at" is now set
+#
+# One trace ID spans gateway -> orders -> Pub/Sub -> fulfillment. Point
+# OTEL_EXPORTER_OTLP_ENDPOINT at a collector to see it end to end.
 services:
   postgres:
     image: postgres:16
@@ -24,6 +31,41 @@ services:
       timeout: 2s
       retries: 15
 
+  # Pub/Sub emulator. The Google client libraries honour PUBSUB_EMULATOR_HOST, so
+  # orders and fulfillment talk to it with no code changes.
+  pubsub:
+    image: gcr.io/google.com/cloudsdktool/cloud-sdk:emulators
+    command: >
+      gcloud beta emulators pubsub start
+      --host-port=0.0.0.0:8085
+      --project=${PUBSUB_PROJECT_ID:-golden-signals-local}
+    ports:
+      - "8085:8085"
+
+  # One-shot: create the topic, subscription and dead-letter resources in the
+  # emulator (the emulator starts empty). Mirrors infra/terraform/pubsub.tf.
+  pubsub-init:
+    image: curlimages/curl:8.6.0
+    depends_on:
+      - pubsub
+    environment:
+      EMU: http://pubsub:8085
+      PROJ: ${PUBSUB_PROJECT_ID:-golden-signals-local}
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        until curl -s -o /dev/null "$$EMU"; do echo "waiting for pubsub emulator"; sleep 1; done
+        curl -s -X PUT "$$EMU/v1/projects/$$PROJ/topics/order-created" >/dev/null
+        curl -s -X PUT "$$EMU/v1/projects/$$PROJ/topics/order-created-dead-letter" >/dev/null
+        curl -s -X PUT "$$EMU/v1/projects/$$PROJ/subscriptions/order-created-fulfillment" \
+          -H "content-type: application/json" \
+          -d "{\"topic\":\"projects/$$PROJ/topics/order-created\",\"ackDeadlineSeconds\":30,\"deadLetterPolicy\":{\"deadLetterTopic\":\"projects/$$PROJ/topics/order-created-dead-letter\",\"maxDeliveryAttempts\":5}}" >/dev/null
+        curl -s -X PUT "$$EMU/v1/projects/$$PROJ/subscriptions/order-created-fulfillment-dead-letter" \
+          -H "content-type: application/json" \
+          -d "{\"topic\":\"projects/$$PROJ/topics/order-created-dead-letter\"}" >/dev/null
+        echo "pubsub resources ready"
+
   orders:
     build:
       context: .
@@ -31,17 +73,44 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      pubsub-init:
+        condition: service_completed_successfully
     environment:
       PORT: "8081"
       DATABASE_URL: postgres://orders:orders@postgres:5432/orders?sslmode=disable
       OTEL_SERVICE_NAME: orders
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
       LOG_LEVEL: info
+      PUBSUB_EMULATOR_HOST: pubsub:8085
+      PUBSUB_PROJECT_ID: ${PUBSUB_PROJECT_ID:-golden-signals-local}
+      PUBSUB_TOPIC_ORDER_CREATED: order-created
       # Fault-injection knobs (disabled by default). Flip FAULT_ENABLED=true and
       # set knobs to demo an error-budget burn. See internal/faultinject.
       FAULT_ENABLED: ${FAULT_ENABLED:-false}
     ports:
       - "8081:8081"
+
+  fulfillment:
+    build:
+      context: .
+      dockerfile: services/fulfillment/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pubsub-init:
+        condition: service_completed_successfully
+    environment:
+      PORT: "8082"
+      DATABASE_URL: postgres://orders:orders@postgres:5432/orders?sslmode=disable
+      OTEL_SERVICE_NAME: fulfillment
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-otel-collector:4317}
+      LOG_LEVEL: info
+      PUBSUB_EMULATOR_HOST: pubsub:8085
+      PUBSUB_PROJECT_ID: ${PUBSUB_PROJECT_ID:-golden-signals-local}
+      PUBSUB_SUBSCRIPTION_ORDER_CREATED: order-created-fulfillment
+      FAULT_ENABLED: ${FAULT_ENABLED:-false}
+    ports:
+      - "8082:8082"
 
   gateway:
     build:

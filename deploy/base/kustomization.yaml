@@ -9,4 +9,5 @@ resources:
   - collector.yaml
   - orders.yaml
   - gateway.yaml
+  - fulfillment.yaml
   - podmonitoring.yaml
