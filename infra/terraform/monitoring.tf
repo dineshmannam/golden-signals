@@ -29,12 +29,18 @@ locals {
   # Latency objective expressed in seconds (the histogram's unit).
   latency_threshold_seconds = var.slo_latency_threshold_ms / 1000
 
-  # Full resource names of the SLOs, used by the burn-rate alert filters.
-  availability_slo_name = "projects/${var.project_id}/services/${google_monitoring_custom_service.gateway.service_id}/serviceLevelObjectives/${google_monitoring_slo.availability.slo_id}"
-  latency_slo_name      = "projects/${var.project_id}/services/${google_monitoring_custom_service.gateway.service_id}/serviceLevelObjectives/${google_monitoring_slo.latency.slo_id}"
+  # Full resource names of the SLOs, used by the burn-rate alert filters and the
+  # SLO dashboard tiles. The SLO resources are gated behind var.create_slos (they
+  # can only be created after the app is serving traffic — see the two-phase apply
+  # in DEPLOY.md), so these locals are guarded to resolve to "" when the SLOs are
+  # off and are only consumed by resources that are themselves gated on the flag.
+  availability_slo_name = var.create_slos ? "projects/${var.project_id}/services/${google_monitoring_custom_service.gateway[0].service_id}/serviceLevelObjectives/${google_monitoring_slo.availability[0].slo_id}" : ""
+  latency_slo_name      = var.create_slos ? "projects/${var.project_id}/services/${google_monitoring_custom_service.gateway[0].service_id}/serviceLevelObjectives/${google_monitoring_slo.latency[0].slo_id}" : ""
 }
 
 resource "google_monitoring_custom_service" "gateway" {
+  count = var.create_slos ? 1 : 0
+
   service_id   = "${var.name_prefix}-gateway"
   display_name = "golden-signals gateway"
 
@@ -43,7 +49,9 @@ resource "google_monitoring_custom_service" "gateway" {
 
 # --- Availability SLO: good = non-5xx responses. ---
 resource "google_monitoring_slo" "availability" {
-  service      = google_monitoring_custom_service.gateway.service_id
+  count = var.create_slos ? 1 : 0
+
+  service      = google_monitoring_custom_service.gateway[0].service_id
   slo_id       = "availability"
   display_name = "Availability - ${var.slo_availability_goal * 100}% of requests non-5xx"
 
@@ -60,7 +68,9 @@ resource "google_monitoring_slo" "availability" {
 
 # --- Latency SLO: good = requests served under the threshold. ---
 resource "google_monitoring_slo" "latency" {
-  service      = google_monitoring_custom_service.gateway.service_id
+  count = var.create_slos ? 1 : 0
+
+  service      = google_monitoring_custom_service.gateway[0].service_id
   slo_id       = "latency"
   display_name = "Latency - ${var.slo_latency_goal * 100}% of requests < ${var.slo_latency_threshold_ms}ms"
 
@@ -90,6 +100,8 @@ resource "google_monitoring_slo" "latency" {
 # Applied to both SLOs.
 
 resource "google_monitoring_alert_policy" "availability_fast_burn" {
+  count = var.create_slos ? 1 : 0
+
   display_name = "golden-signals availability fast burn (page)"
   combiner     = "AND"
 
@@ -130,6 +142,8 @@ resource "google_monitoring_alert_policy" "availability_fast_burn" {
 }
 
 resource "google_monitoring_alert_policy" "availability_slow_burn" {
+  count = var.create_slos ? 1 : 0
+
   display_name = "golden-signals availability slow burn (ticket)"
   combiner     = "AND"
 
@@ -170,6 +184,8 @@ resource "google_monitoring_alert_policy" "availability_slow_burn" {
 }
 
 resource "google_monitoring_alert_policy" "latency_fast_burn" {
+  count = var.create_slos ? 1 : 0
+
   display_name = "golden-signals latency fast burn (page)"
   combiner     = "AND"
 
@@ -215,7 +231,10 @@ resource "google_monitoring_dashboard" "golden_signals" {
     displayName = "golden-signals - Golden Signals"
     mosaicLayout = {
       columns = 12
-      tiles = [
+      # The two SLO scorecard tiles reference the gateway SLOs, which only exist
+      # when var.create_slos is true; they are appended only in that phase so the
+      # dashboard renders cleanly during the infra-only apply.
+      tiles = concat([
         {
           width  = 6
           height = 4
@@ -293,6 +312,7 @@ resource "google_monitoring_dashboard" "golden_signals" {
             }
           }
         },
+        ], var.create_slos ? [
         {
           xPos   = 6
           yPos   = 4
@@ -333,7 +353,7 @@ resource "google_monitoring_dashboard" "golden_signals" {
             }
           }
         },
-      ]
+      ] : [])
     }
   })
 

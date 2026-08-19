@@ -15,6 +15,10 @@ resource "google_sql_database_instance" "postgres" {
   depends_on = [google_service_networking_connection.private_services]
 
   settings {
+    # Custom machine tiers (db-custom-*) are only valid on ENTERPRISE. Without
+    # this, GCP defaults new instances to ENTERPRISE_PLUS, which rejects the
+    # custom tier with an "invalid tier" error at apply time.
+    edition           = "ENTERPRISE"
     tier              = var.postgres_tier
     availability_type = "ZONAL"
     disk_autoresize   = true

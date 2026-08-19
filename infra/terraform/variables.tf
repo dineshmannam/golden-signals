@@ -87,6 +87,12 @@ variable "deletion_protection" {
   default     = true
 }
 
+variable "create_slos" {
+  description = "Create the Cloud Monitoring SLOs, burn-rate alerts, and SLO dashboard tiles. Keep false for the initial infra apply — the SLIs filter on Prometheus metrics (http_requests_total, messages_processed_total) that only exist once the app is deployed and serving traffic. Flip to true in the post-deploy Step 3 apply (see DEPLOY.md)."
+  type        = bool
+  default     = false
+}
+
 variable "slo_availability_goal" {
   description = "Availability SLO target as a fraction (0.99 = 99%)."
   type        = number

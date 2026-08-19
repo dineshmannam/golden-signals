@@ -10,8 +10,10 @@ The flow is:
 1. **`bootstrap.sh`** — APIs, Terraform state bucket, provisioning service account.
 2. **Create the Cloud Build host connection** (manual, console — a few clicks).
 3. **`scripts/create-triggers.sh`** — the infra and app build triggers.
-4. **Terraform + Config Sync** apply the infrastructure and reconcile the cluster.
-5. **Teardown** when you're done.
+4. **Deploy in three ordered steps** — Step 1 infra (SLOs off) → Step 2 app +
+   traffic → Step 3 SLOs. The SLOs are a deliberate **post-deploy** step; see
+   below for why.
+5. **Teardown** when you're done (reverse order).
 
 Prerequisites: `gcloud` (authenticated: `gcloud auth login` and
 `gcloud config set project <id>`), and a GCP project with billing enabled. The
@@ -92,10 +94,21 @@ console, or run Terraform manually (below).
 
 ---
 
-## 4. Apply infrastructure & reconcile the cluster
+## 4. Deploy in three ordered steps
 
-You can let the **infra trigger** apply Terraform on the next push under
-`infra/**`, or run it manually the first time:
+The deploy is a **three-step flow**, and the order matters. The SLOs' SLIs filter
+on Prometheus metrics (`http_requests_total`, `http_request_duration_seconds`,
+`messages_processed_total`) that **do not exist** until the app is deployed *and*
+has served some traffic. Creating the SLOs during the infra apply therefore fails
+with `Cannot find metric(s)`. The `create_slos` Terraform variable (default
+`false`) gates the SLOs, burn-rate alerts, and SLO dashboard tiles so infra can
+come up first; you flip it on in Step 3 once live series exist.
+
+### Step 1 — Infrastructure (SLOs off)
+
+Let the **infra trigger** apply Terraform on the next push under `infra/**`, or run
+it manually the first time. `create_slos` defaults to `false`, so this creates
+everything *except* the SLOs:
 
 ```bash
 cd infra/terraform
@@ -106,36 +119,67 @@ terraform apply
 ```
 
 This provisions GKE Autopilot, Cloud SQL, Artifact Registry, IAM/Workload
-Identity, and the Cloud Monitoring SLOs/alerts/dashboard. `terraform output`
-prints the image repo, GSA emails, DB-URL secret, and the `get-credentials`
-command. See [`infra/terraform/README.md`](infra/terraform/README.md).
+Identity, Pub/Sub, and the golden-signals dashboard (request-rate / error-ratio /
+latency tiles). `terraform output` prints the image repo, GSA emails, DB-URL
+secret, and the `get-credentials` command. See
+[`infra/terraform/README.md`](infra/terraform/README.md).
 
-Then build images (the app trigger does this on `services/**` changes, or run
-`gcloud builds submit --config cloudbuild.yaml`) and follow
+### Step 2 — App + traffic
+
+Build and push the service images (the app trigger does this on `services/**`
+changes, or run `gcloud builds submit --config cloudbuild.yaml`), then follow
 [`deploy/README.md`](deploy/README.md) to substitute your project ID, create the
 `orders-db` Secret, and apply the `RootSync` so Config Sync reconciles
 `deploy/overlays/prod`.
 
----
+Once the workloads are Running, **send some traffic through the gateway** (a few
+requests to its endpoints, and place an order so the fulfillment worker processes
+a message). Then confirm in **Cloud Monitoring → Metrics Explorer** that the
+series `prometheus.googleapis.com/http_requests_total/counter` (and, for the
+fulfillment SLO, `.../messages_processed_total/counter`) have appeared. The SLOs
+in Step 3 will fail to create until these live series exist.
 
-## 5. Teardown
+### Step 3 — SLOs
 
-Reverse order. First destroy the Terraform-managed infrastructure, then remove the
-triggers and the bootstrap resources.
+With live metrics present, re-apply with the flag on to create the SLOs, burn-rate
+alert policies, and the SLO scorecard tiles on the dashboard:
 
 ```bash
-# 1. Infra. deletion_protection defaults to true on GKE + Cloud SQL — set it to
-#    false first (var or terraform.tfvars), re-apply, then destroy.
 cd infra/terraform
+terraform apply -var create_slos=true
+```
+
+(If you deploy via the infra trigger, set a `_CREATE_SLOS=true` substitution / add
+`-var create_slos=true` to the pipeline for this apply, or run it manually as
+above.)
+
+---
+
+## 5. Teardown (reverse order)
+
+Reverse the deploy: drop the SLOs and lift deletion protection with an apply
+*first*, then destroy, then remove the triggers and bootstrap resources.
+
+```bash
+cd infra/terraform
+
+# 1. Lift the guard on GKE + Cloud SQL (both bound to the one deletion_protection
+#    var) with an apply. This MUST land before destroy — a one-shot
+#    `terraform destroy -var deletion_protection=false` does NOT work, because the
+#    protection flag is only cleared once the apply updates the resources.
+terraform apply -var deletion_protection=false
+
+# 2. Destroy everything Terraform manages. (create_slos defaults to false, so any
+#    SLOs from Step 3 are torn down as part of this destroy.)
 terraform destroy
 
-# 2. Triggers.
+# 3. Triggers.
 gcloud builds triggers delete golden-signals-infra --region us-central1 --project my-gcp-project
 gcloud builds triggers delete golden-signals-app   --region us-central1 --project my-gcp-project
 
-# 3. Host connection: delete it in the console (or `gcloud builds connections delete`).
+# 4. Host connection: delete it in the console (or `gcloud builds connections delete`).
 
-# 4. Bootstrap resources (SA + IAM bindings; add --force to also delete the
+# 5. Bootstrap resources (SA + IAM bindings; add --force to also delete the
 #    state bucket and its contents).
 ./bootstrap.sh --project my-gcp-project --destroy --force
 ```

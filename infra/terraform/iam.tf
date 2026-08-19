@@ -59,6 +59,10 @@ resource "google_service_account_iam_member" "collector_wi" {
   service_account_id = google_service_account.collector.name
   role               = "roles/iam.workloadIdentityUser"
   member             = local.wi_members.collector
+
+  # The member references the workload identity pool ${project}.svc.id.goog,
+  # which only exists once the Autopilot cluster is created.
+  depends_on = [google_container_cluster.autopilot]
 }
 
 # --- Orders GSA ---
@@ -83,6 +87,8 @@ resource "google_service_account_iam_member" "orders_wi" {
   service_account_id = google_service_account.orders.name
   role               = "roles/iam.workloadIdentityUser"
   member             = local.wi_members.orders
+
+  depends_on = [google_container_cluster.autopilot]
 }
 
 # --- Fulfillment GSA ---
@@ -107,6 +113,8 @@ resource "google_service_account_iam_member" "fulfillment_wi" {
   service_account_id = google_service_account.fulfillment.name
   role               = "roles/iam.workloadIdentityUser"
   member             = local.wi_members.fulfillment
+
+  depends_on = [google_container_cluster.autopilot]
 }
 
 # --- Gateway GSA (no project-level roles: least privilege) ---
@@ -119,6 +127,8 @@ resource "google_service_account_iam_member" "gateway_wi" {
   service_account_id = google_service_account.gateway.name
   role               = "roles/iam.workloadIdentityUser"
   member             = local.wi_members.gateway
+
+  depends_on = [google_container_cluster.autopilot]
 }
 
 # --- Image pull / push ---
