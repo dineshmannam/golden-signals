@@ -22,6 +22,11 @@ region = "us-central1"
 # pubsub_dead_letter_max_attempts   = 5
 # pubsub_ack_deadline_seconds       = 30
 
+# SLOs are a post-deploy (Step 3) step — see DEPLOY.md. Keep this false for the
+# initial infra apply; flip to true (or `apply -var create_slos=true`) only after
+# the app is serving traffic and its Prometheus metrics exist.
+# create_slos = false
+
 # SLO targets:
 # slo_availability_goal    = 0.99
 # slo_latency_goal         = 0.99

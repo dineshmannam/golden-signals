@@ -184,6 +184,29 @@ grant_roles() {
     --quiet >/dev/null
 }
 
+provision_service_networking_agent() {
+  # Private Services Access (the VPC peering Cloud SQL needs, in network.tf) is
+  # brokered by the Service Networking service agent. In a locked-down project
+  # that agent may not be provisioned yet, and the peering apply then fails with
+  # "Required 'compute.globalAddresses.list' permission for projects/<number>".
+  # Create the identity and grant it its service-agent role (both idempotent).
+  local project_number
+  project_number="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+  local agent="service-${project_number}@service-networking.iam.gserviceaccount.com"
+
+  log "Provisioning the Service Networking service agent for ${PROJECT_ID}…"
+  gcloud beta services identity create \
+    --service=servicenetworking.googleapis.com \
+    --project="$PROJECT_ID" >/dev/null
+
+  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member "serviceAccount:${agent}" \
+    --role "roles/servicenetworking.serviceAgent" \
+    --condition=None \
+    --quiet >/dev/null
+  echo "    + roles/servicenetworking.serviceAgent -> ${agent}"
+}
+
 print_summary() {
   cat <<EOF
 
@@ -208,6 +231,7 @@ EOF
 
 do_create() {
   enable_apis
+  provision_service_networking_agent
   create_bucket
   create_sa
   grant_roles

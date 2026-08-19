@@ -17,10 +17,16 @@ locals {
     "metric.label.\"service\"=\"fulfillment\"",
   ])
 
-  fulfillment_slo_name = "projects/${var.project_id}/services/${google_monitoring_custom_service.fulfillment.service_id}/serviceLevelObjectives/${google_monitoring_slo.fulfillment_success.slo_id}"
+  # Guarded on var.create_slos for the same reason as the gateway SLO names in
+  # monitoring.tf: the fulfillment SLO keys off messages_processed_total, which
+  # only exists once the worker has processed traffic, so it is a post-deploy
+  # (Step 3) resource. Only the gated fast-burn alert consumes this local.
+  fulfillment_slo_name = var.create_slos ? "projects/${var.project_id}/services/${google_monitoring_custom_service.fulfillment[0].service_id}/serviceLevelObjectives/${google_monitoring_slo.fulfillment_success[0].slo_id}" : ""
 }
 
 resource "google_monitoring_custom_service" "fulfillment" {
+  count = var.create_slos ? 1 : 0
+
   service_id   = "${var.name_prefix}-fulfillment"
   display_name = "golden-signals fulfillment"
 
@@ -29,7 +35,9 @@ resource "google_monitoring_custom_service" "fulfillment" {
 
 # --- Processing-success SLO: good = messages processed without error. ---
 resource "google_monitoring_slo" "fulfillment_success" {
-  service      = google_monitoring_custom_service.fulfillment.service_id
+  count = var.create_slos ? 1 : 0
+
+  service      = google_monitoring_custom_service.fulfillment[0].service_id
   slo_id       = "processing-success"
   display_name = "Fulfillment - ${var.slo_fulfillment_goal * 100}% of messages processed successfully"
 
@@ -46,6 +54,8 @@ resource "google_monitoring_slo" "fulfillment_success" {
 
 # --- Fast-burn alert (page) on the fulfillment error budget. ---
 resource "google_monitoring_alert_policy" "fulfillment_fast_burn" {
+  count = var.create_slos ? 1 : 0
+
   display_name = "golden-signals fulfillment fast burn (page)"
   combiner     = "AND"
 
